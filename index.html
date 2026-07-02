@@ -179,7 +179,17 @@ tbody tr:last-child td { border-bottom:none; }
 .p2 { background:var(--bg3); color:var(--text); border:1px solid var(--border2); }
 .p3 { background:none; color:var(--text2); border:1px solid var(--border2); }
 .wrap-col { white-space:normal; min-width:220px; color:var(--text); font-family:var(--prose); font-size:12.5px; line-height:1.45; }
-.status-open { color:var(--orange); font-weight:700; font-size:10px; text-transform:uppercase; letter-spacing:0.8px; }
+.rstatus { display:inline-block; padding:3px 8px; border-radius:2px; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; white-space:nowrap; border:1px solid; cursor:pointer; user-select:none; }
+.rstatus:hover { filter:brightness(0.96); }
+.rs-open { background:var(--amber-dim); color:var(--amber); border-color:#CDB98A; }
+.rs-researching { background:#E2EAF2; color:var(--blue); border-color:#A9C2DB; }
+.rs-done { background:var(--green-dim); color:var(--green); border-color:#A6C0A2; }
+.rs-dropped { background:var(--bg3); color:var(--text3); border-color:var(--border2); text-decoration:line-through; }
+.form-group textarea { width:100%; padding:9px 11px; border-radius:2px; border:1px solid var(--border2); background:var(--bg); color:var(--text); font-family:var(--sans); font-size:13px; resize:vertical; line-height:1.45; }
+.form-group textarea:focus { outline:none; border-color:var(--accent); }
+.form-group.full { margin-bottom:14px; }
+.rq-grid3 { display:grid; grid-template-columns:90px 140px 1fr; gap:14px; margin-bottom:14px; }
+@media(max-width:520px){ .rq-grid3 { grid-template-columns:1fr 1fr; } }
 
 /* Modal */
 .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:none; align-items:center; justify-content:center; z-index:1000; padding:20px; }
@@ -337,10 +347,13 @@ tbody tr:last-child td { border-bottom:none; }
   <section class="panel" id="p-research">
     <h2>Research</h2>
     <div class="section-title">Research Queue</div>
-    <div class="section-note">Open questions ranked by priority, with the data needed and what the answer changes.</div>
+    <div class="section-note">Open questions ranked by priority, with the data needed and what the answer changes. Click a status to cycle it; use the ⋮ menu to edit or delete.</div>
+    <div class="toolbar">
+      <button class="btn btn-primary" onclick="openResearchAdd()">+ Add Research Item</button>
+    </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Pri</th><th>Ticker</th><th>Question</th><th>Data to Pull</th><th>Trade Consequence</th><th>Status</th></tr></thead>
+        <thead><tr><th>Pri</th><th>Ticker</th><th>Question</th><th>Data to Pull</th><th>Trade Consequence</th><th>Status</th><th></th></tr></thead>
         <tbody id="research-body"></tbody>
       </table>
     </div>
@@ -398,6 +411,30 @@ tbody tr:last-child td { border-bottom:none; }
       <div class="modal-actions">
         <button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn btn-primary" onclick="saveTicker()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Research modal -->
+<div class="modal-overlay" id="rq-modal">
+  <div class="modal" style="max-width:560px">
+    <div class="modal-h">
+      <h2 id="rq-title">Add Research Item</h2>
+      <button class="modal-close" onclick="closeResearchModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="rq-grid3">
+        <div class="form-group"><label>Priority</label><select id="rq-priority"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></div>
+        <div class="form-group"><label>Status</label><select id="rq-status"><option>Open</option><option>Researching</option><option>Done</option><option>Dropped</option></select></div>
+        <div class="form-group"><label>Ticker(s)</label><input id="rq-ticker" placeholder="QCOM or SNDK/WDC"></div>
+      </div>
+      <div class="form-group full"><label>Question</label><input id="rq-question" placeholder="What are you trying to answer?"></div>
+      <div class="form-group full"><label>Data to Pull</label><textarea id="rq-data" rows="2" placeholder="What data answers it?"></textarea></div>
+      <div class="form-group full"><label>Trade Consequence</label><textarea id="rq-consequence" rows="2" placeholder="What does the answer change?"></textarea></div>
+      <div class="modal-actions">
+        <button class="btn" onclick="closeResearchModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveResearchItem()">Save</button>
       </div>
     </div>
   </div>
@@ -485,7 +522,7 @@ const BUCKETS = [
   {name:'Gambling',           tickers:['DKNG','FLUT'], bias:'Selective / catalyst', expr:'Call-spread into earnings only', trigger:'Margins improve / regulatory clear', invalid:'Prediction market pressure', sizing:'0.25–0.75%, avoid IV chase'},
 ];
 
-const RESEARCH = [
+const DEFAULT_RESEARCH = [
   {p:1, t:'QCOM', q:'Is the data-center AI pivot real enough?', d:'Order/backlog detail, customer names, DC sales bridge', c:"Higher-conviction AI infra vs GPU beta; if no, don't chase"},
   {p:1, t:'SNDK/WDC', q:'Are memory/storage economics early or late cycle?', d:'Spot/contract pricing, inventory days, hyperscaler capex', c:'Late = credit-spread only / take profits; Early = add on pullback'},
   {p:1, t:'NVDA', q:'Is consensus underestimating non-GPU attach?', d:'Segment margin, networking growth, backlog, concentration', c:'Determines if pullbacks are buys or crowded unwind bounces'},
@@ -504,6 +541,11 @@ let sortKey = 'composite';
 let sortDir = -1;
 let editingId = null;
 let actionFilter = 'All';
+let research = [];
+let editingResearchId = null;
+const RKEY = 'stonks-research-v1';
+const RSTATUS = ['Open','Researching','Done','Dropped'];
+const STATUS_CLS = { 'Open':'rs-open', 'Researching':'rs-researching', 'Done':'rs-done', 'Dropped':'rs-dropped' };
 
 // ===== Scoring (matches Stonks_V2.xlsx exactly) =====
 // Composite = 20 × (0.25·eps + 0.20·val + 0.20·narr + 0.15·(6 − hype) + 0.15·cat + 0.05·liq)
@@ -526,31 +568,74 @@ function recomputeAll() {
 }
 
 // ===== Load / Save =====
+// UTF-8-safe base64 (share text contains em dashes / curly quotes that plain btoa rejects)
+function b64encode(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = ''; bytes.forEach(b => bin += String.fromCharCode(b));
+  return btoa(bin);
+}
+function b64decode(b64) {
+  return new TextDecoder().decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0)));
+}
+
 function load() {
+  let fromShare = false;
   if (location.hash.length > 1) {
     try {
-      const decoded = JSON.parse(atob(decodeURIComponent(location.hash.slice(1))));
+      const decoded = JSON.parse(b64decode(decodeURIComponent(location.hash.slice(1))));
       if (Array.isArray(decoded) && decoded.every(t => t && t.symbol)) {
-        tickers = decoded;
-        history.replaceState(null, '', location.pathname + location.search);
-        save();
-        toast('Loaded shared watchlist (' + tickers.length + ' tickers)');
-        return;
+        tickers = decoded; loadResearch(); fromShare = true;       // legacy: tickers-only link
+      } else if (decoded && Array.isArray(decoded.tickers) && decoded.tickers.every(t => t && t.symbol)) {
+        tickers = decoded.tickers;
+        research = Array.isArray(decoded.research) ? decoded.research : structuredClone(DEFAULT_RESEARCH);
+        normalizeResearch();
+        fromShare = true;
       }
     } catch(e) {}
+  }
+  if (fromShare) {
+    history.replaceState(null, '', location.pathname + location.search);
+    recomputeAll();
+    try { localStorage.setItem(LS_KEY, JSON.stringify(tickers)); } catch(e) {}
+    persistResearch();
+    render();
+    toast('Loaded shared doc (' + tickers.length + ' tickers, ' + research.length + ' research)');
+    return;
   }
   try {
     const stored = localStorage.getItem(LS_KEY);
     tickers = stored ? JSON.parse(stored) : structuredClone(DEFAULT_TICKERS);
   } catch(e) { tickers = structuredClone(DEFAULT_TICKERS); }
+  loadResearch();
   recomputeAll();
   render();
+  renderResearch();
 }
 
 function save() {
   recomputeAll();
   try { localStorage.setItem(LS_KEY, JSON.stringify(tickers)); } catch(e) {}
   render();
+}
+
+// ===== Research state =====
+function loadResearch() {
+  try {
+    const stored = localStorage.getItem(RKEY);
+    research = stored ? JSON.parse(stored) : structuredClone(DEFAULT_RESEARCH);
+  } catch(e) { research = structuredClone(DEFAULT_RESEARCH); }
+  normalizeResearch();
+}
+function normalizeResearch() {
+  research.forEach((r, i) => {
+    if (!r.id) r.id = 'rq' + Date.now().toString(36) + i + Math.floor(Math.random()*1000);
+    if (!RSTATUS.includes(r.status)) r.status = 'Open';
+    r.p = Math.min(3, Math.max(1, parseInt(r.p, 10) || 3));
+  });
+}
+function persistResearch() {
+  try { localStorage.setItem(RKEY, JSON.stringify(research)); } catch(e) {}
+  renderResearch();
 }
 
 // ===== Helpers =====
@@ -773,15 +858,90 @@ function renderRisk() {
 
 // ===== Research =====
 function renderResearch() {
-  document.getElementById('research-body').innerHTML = RESEARCH.map(r => `
+  const rows = [...research].sort((a, b) => a.p - b.p);
+  document.getElementById('research-body').innerHTML = rows.map(r => `
     <tr>
       <td><span class="prio p${r.p}">${r.p}</span></td>
-      <td class="sym">${r.t}</td>
-      <td class="wrap-col" style="color:var(--text)">${r.q}</td>
-      <td class="wrap-col">${r.d}</td>
-      <td class="wrap-col">${r.c}</td>
-      <td><span class="status-open">OPEN</span></td>
-    </tr>`).join('');
+      <td class="sym">${esc(r.t)}</td>
+      <td class="wrap-col" style="color:var(--text)">${esc(r.q)}</td>
+      <td class="wrap-col">${esc(r.d)}</td>
+      <td class="wrap-col">${esc(r.c)}</td>
+      <td><span class="rstatus ${STATUS_CLS[r.status] || 'rs-open'}" onclick="cycleStatus('${esc(r.id)}')" title="Click to cycle status">${esc(r.status || 'Open')}</span></td>
+      <td class="row-menu">
+        <button class="row-menu-btn" onclick="toggleMenu(this)">⋮</button>
+        <div class="row-menu-dd">
+          <button onclick="openResearchEdit('${esc(r.id)}')">Edit</button>
+          <button onclick="deleteResearch('${esc(r.id)}')">Delete</button>
+        </div>
+      </td>
+    </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:24px">No research items. Add one to start your queue.</td></tr>';
+}
+
+function cycleStatus(id) {
+  const r = research.find(x => x.id === id);
+  if (!r) return;
+  r.status = RSTATUS[(RSTATUS.indexOf(r.status) + 1) % RSTATUS.length];
+  persistResearch();
+}
+
+function openResearchAdd() {
+  editingResearchId = null;
+  document.getElementById('rq-title').textContent = 'Add Research Item';
+  document.getElementById('rq-priority').value = '2';
+  document.getElementById('rq-status').value = 'Open';
+  ['ticker','question','data','consequence'].forEach(f => document.getElementById('rq-'+f).value = '');
+  document.getElementById('rq-modal').classList.add('show');
+}
+
+function openResearchEdit(id) {
+  const r = research.find(x => x.id === id);
+  if (!r) return;
+  editingResearchId = id;
+  document.getElementById('rq-title').textContent = 'Edit Research Item';
+  document.getElementById('rq-priority').value = String(r.p);
+  document.getElementById('rq-status').value = r.status || 'Open';
+  document.getElementById('rq-ticker').value = r.t || '';
+  document.getElementById('rq-question').value = r.q || '';
+  document.getElementById('rq-data').value = r.d || '';
+  document.getElementById('rq-consequence').value = r.c || '';
+  document.getElementById('rq-modal').classList.add('show');
+}
+
+function closeResearchModal() {
+  document.getElementById('rq-modal').classList.remove('show');
+  editingResearchId = null;
+}
+
+function saveResearchItem() {
+  const t = document.getElementById('rq-ticker').value.trim();
+  const q = document.getElementById('rq-question').value.trim();
+  if (!t && !q) { toast('Add a ticker or a question'); return; }
+  const wasEditing = !!editingResearchId;
+  const item = {
+    id: editingResearchId || ('rq' + Date.now().toString(36) + Math.floor(Math.random()*1000)),
+    p: Math.min(3, Math.max(1, parseInt(document.getElementById('rq-priority').value, 10) || 2)),
+    t, q,
+    d: document.getElementById('rq-data').value.trim(),
+    c: document.getElementById('rq-consequence').value.trim(),
+    status: document.getElementById('rq-status').value
+  };
+  if (wasEditing) {
+    const idx = research.findIndex(x => x.id === editingResearchId);
+    if (idx >= 0) research[idx] = item;
+  } else {
+    research.push(item);
+  }
+  closeResearchModal();
+  persistResearch();
+  toast(wasEditing ? 'Research item updated' : 'Research item added');
+}
+
+function deleteResearch(id) {
+  const r = research.find(x => x.id === id);
+  if (!confirm('Delete this research item' + (r && r.t ? ' (' + r.t + ')' : '') + '?')) return;
+  research = research.filter(x => x.id !== id);
+  persistResearch();
+  toast('Research item deleted');
 }
 
 // ===== Modal =====
@@ -888,8 +1048,22 @@ function deleteTicker(id) {
 }
 
 // ===== Export / Import / Share =====
+// Bundle carries both the watchlist and the research queue so edits travel together.
+function currentBundle() { return { v: 2, tickers, research }; }
+
+// Accepts the v2 bundle {tickers, research} or a legacy bare tickers array.
+function applyImported(data) {
+  if (Array.isArray(data)) {
+    if (data.length && !data[0].symbol) throw new Error('Invalid format');
+    tickers = data;                                  // legacy: tickers only, keep current research
+  } else if (data && Array.isArray(data.tickers)) {
+    tickers = data.tickers;
+    if (Array.isArray(data.research)) { research = data.research; normalizeResearch(); }
+  } else throw new Error('Invalid format');
+}
+
 function exportJSON() {
-  const blob = new Blob([JSON.stringify(tickers, null, 2)], {type:'application/json'});
+  const blob = new Blob([JSON.stringify(currentBundle(), null, 2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = 'stonks-watchlist.json'; a.click();
@@ -903,11 +1077,10 @@ function importJSON(input) {
   const reader = new FileReader();
   reader.onload = e => {
     try {
-      const data = JSON.parse(e.target.result);
-      if (!Array.isArray(data) || (data.length > 0 && !data[0].symbol)) throw new Error('Invalid format');
-      tickers = data;
+      applyImported(JSON.parse(e.target.result));
       save();
-      toast('Imported ' + data.length + ' tickers');
+      persistResearch();
+      toast('Imported ' + tickers.length + ' tickers, ' + research.length + ' research');
     } catch(err) { toast('Import failed: ' + err.message); }
     input.value = '';
   };
@@ -915,7 +1088,7 @@ function importJSON(input) {
 }
 
 function copyShareLink() {
-  const url = location.origin + location.pathname + '#' + encodeURIComponent(btoa(JSON.stringify(tickers)));
+  const url = location.origin + location.pathname + '#' + encodeURIComponent(b64encode(JSON.stringify(currentBundle())));
   navigator.clipboard.writeText(url).then(() => toast('Share link copied!')).catch(() => {
     const ta = document.createElement('textarea');
     ta.value = url; document.body.appendChild(ta); ta.select();
@@ -925,9 +1098,12 @@ function copyShareLink() {
 }
 
 function resetDefault() {
-  if (!confirm('Reset all tickers to defaults?')) return;
+  if (!confirm('Reset watchlist and research queue to defaults?')) return;
   tickers = structuredClone(DEFAULT_TICKERS);
+  research = structuredClone(DEFAULT_RESEARCH);
+  normalizeResearch();
   save();
+  persistResearch();
   toast('Reset to defaults');
 }
 
