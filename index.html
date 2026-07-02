@@ -178,6 +178,9 @@ tbody tr:last-child td { border-bottom:none; }
 .form-grid { display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:12px; margin-bottom:16px; }
 @media(max-width:600px){ .form-grid { grid-template-columns:1fr 1fr; } }
 .modal .form-group input, .modal .form-group select { background:var(--bg); }
+.sym-row { display:flex; gap:6px; }
+.sym-row input { flex:1; min-width:0; }
+.autofill-btn { padding:6px 10px; font-size:14px; line-height:1; }
 .slider-row { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:12px; }
 .slider-group label { display:flex; justify-content:space-between; font-size:11px; color:var(--text3); margin-bottom:4px; }
 .slider-group label span { color:var(--accent); font-weight:600; }
@@ -223,7 +226,7 @@ tbody tr:last-child td { border-bottom:none; }
       <div class="stat"><div class="val" id="st-avoid" style="color:var(--red)">–</div><div class="lbl">Avoid</div></div>
     </div>
   </div>
-  <div class="subtitle">Decision-first equity watchlist · 6-factor scoring model · Market snapshot <b>2026-06-26</b> — verify live prices before trading</div>
+  <div class="subtitle">Decision-first equity watchlist · 6-factor scoring model · <span id="snap-note">Market snapshot <b>2026-06-26</b></span> — verify live prices before trading</div>
 
   <nav class="tabs">
     <button class="tab active" data-tab="watchlist" onclick="showTab('watchlist')">Watchlist</button>
@@ -238,6 +241,7 @@ tbody tr:last-child td { border-bottom:none; }
     <h2>Watchlist</h2>
     <div class="toolbar">
       <button class="btn btn-primary" onclick="openAdd()">+ Add Ticker</button>
+      <button class="btn" id="refresh-btn" onclick="refreshQuotes()" title="Update price, market cap, P/E and EPS growth for every ticker">↻ Refresh Quotes</button>
       <input class="search" id="search" placeholder="Search symbol, company, theme…" oninput="render()">
       <div class="chips" id="action-chips"></div>
     </div>
@@ -336,7 +340,7 @@ tbody tr:last-child td { border-bottom:none; }
     </div>
     <div class="modal-body">
       <div class="form-grid">
-        <div class="form-group"><label>Symbol</label><input id="m-symbol" placeholder="AAPL"></div>
+        <div class="form-group"><label>Symbol</label><div class="sym-row"><input id="m-symbol" placeholder="AAPL"><button class="btn autofill-btn" onclick="autofillSymbol()" title="Autofill price, mkt cap, P/E, EPS growth from live quotes">⚡</button></div></div>
         <div class="form-group"><label>Company</label><input id="m-company" placeholder="Apple Inc"></div>
         <div class="form-group"><label>Theme</label>
           <select id="m-theme"><option>GPU</option><option>CPU</option><option>Chip Fab</option><option>Memory/Storage</option><option>Tech Behemoths</option><option>Semiconductors</option><option>EV</option><option>Tech Memes</option><option>Memes</option><option>Telehealth</option><option>Gambling</option><option>Other</option></select>
@@ -368,6 +372,25 @@ tbody tr:last-child td { border-bottom:none; }
       <div class="modal-actions">
         <button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn btn-primary" onclick="saveTicker()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- API key modal -->
+<div class="modal-overlay" id="key-modal">
+  <div class="modal" style="max-width:460px">
+    <div class="modal-h">
+      <h2>Live Quotes Setup</h2>
+      <button class="modal-close" onclick="closeKeyModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.5">Quote autofill uses <a href="https://finnhub.io/register" target="_blank" rel="noopener" style="color:var(--accent)">Finnhub</a> — a free API key takes about 30 seconds to create (60 requests/min, US stocks).</p>
+      <div class="form-group"><label>Finnhub API Key</label><input id="key-input" placeholder="paste key…" autocomplete="off"></div>
+      <p style="font-size:11px;color:var(--text3);margin-top:10px;line-height:1.5">Stored only in this browser (localStorage) — never in the document, exports, or share links. Save with the field empty to remove it.</p>
+      <div class="modal-actions">
+        <button class="btn" onclick="closeKeyModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveKey()">Save</button>
       </div>
     </div>
   </div>
@@ -880,6 +903,123 @@ function resetDefault() {
   toast('Reset to defaults');
 }
 
+// ===== Live quotes (Finnhub — free key, CORS-enabled, viewer-supplied) =====
+const KEY_LS = 'stonks-finnhub-key';
+const REFRESH_LS = 'stonks-last-refresh';
+let pendingKeyAction = null;
+let refreshing = false;
+
+function getKey() { try { return localStorage.getItem(KEY_LS) || ''; } catch(e) { return ''; } }
+function openKeyModal(action) {
+  pendingKeyAction = action || null;
+  document.getElementById('key-input').value = getKey();
+  document.getElementById('key-modal').classList.add('show');
+}
+function closeKeyModal() { document.getElementById('key-modal').classList.remove('show'); pendingKeyAction = null; }
+function saveKey() {
+  const k = document.getElementById('key-input').value.trim();
+  try { k ? localStorage.setItem(KEY_LS, k) : localStorage.removeItem(KEY_LS); } catch(e) {}
+  const action = pendingKeyAction;
+  document.getElementById('key-modal').classList.remove('show');
+  pendingKeyAction = null;
+  toast(k ? 'API key saved (this browser only)' : 'API key removed');
+  if (k && action) action();
+}
+
+async function fh(path) {
+  const res = await fetch('https://finnhub.io/api/v1/' + path + '&token=' + encodeURIComponent(getKey()));
+  if (res.status === 401 || res.status === 403) throw new Error('invalid API key');
+  if (res.status === 429) throw new Error('rate limit hit — wait a minute and retry');
+  if (!res.ok) throw new Error('quote service error (' + res.status + ')');
+  return res.json();
+}
+function pick(obj, keys) { for (const k of keys) { const v = obj ? obj[k] : null; if (v != null && isFinite(v)) return v; } return null; }
+
+async function fetchQuote(sym, withProfile) {
+  const s = encodeURIComponent(sym);
+  const [quote, metricRes, profile] = await Promise.all([
+    fh('quote?symbol=' + s),
+    fh('stock/metric?symbol=' + s + '&metric=all').catch(() => null),
+    withProfile ? fh('stock/profile2?symbol=' + s).catch(() => null) : Promise.resolve(null)
+  ]);
+  const m = (metricRes && metricRes.metric) || null;
+  const growth = pick(m, ['epsGrowthTTMYoy', 'epsGrowthQuarterlyYoy']);
+  const capM = pick(m, ['marketCapitalization']) ?? (profile && profile.marketCapitalization) ?? null; // $ millions
+  return {
+    price: quote && quote.c ? +quote.c : null,
+    mktCap: capM != null ? +(capM / 1000).toFixed(2) : null,
+    pe: pick(m, ['peTTM', 'peBasicExclExtraTTM', 'peExclExtraTTM', 'peInclExtraTTM']),
+    metricOk: !!m,          // distinguishes "no P/E (negative EPS)" from "metric call failed"
+    epsYoy: growth != null ? +(1 + growth / 100).toFixed(2) : null,
+    name: (profile && profile.name) || null
+  };
+}
+
+async function autofillSymbol() {
+  const sym = document.getElementById('m-symbol').value.trim().toUpperCase();
+  if (!sym) { toast('Enter a symbol first'); return; }
+  if (!getKey()) { openKeyModal(autofillSymbol); return; }
+  toast('Fetching ' + sym + '…');
+  try {
+    const q = await fetchQuote(sym, true);
+    if (q.price == null && q.mktCap == null && !q.metricOk) { toast('No data for ' + sym + ' — check the symbol'); return; }
+    if (q.price != null) document.getElementById('m-price').value = q.price;
+    if (q.mktCap != null) document.getElementById('m-mktcap').value = q.mktCap;
+    if (q.metricOk) document.getElementById('m-pe').value = q.pe != null ? q.pe.toFixed(2) : '';
+    if (q.epsYoy != null) document.getElementById('m-epsyoy').value = q.epsYoy;
+    if (q.name && !document.getElementById('m-company').value.trim()) document.getElementById('m-company').value = q.name;
+    const missing = [['price',q.price],['mkt cap',q.mktCap],['P/E',q.pe],['EPS YoY',q.epsYoy]].filter(x => x[1] == null).map(x => x[0]);
+    toast(sym + ' filled' + (missing.length ? ' — no ' + missing.join(', ') : ''));
+  } catch(err) { toast('Autofill failed: ' + err.message); }
+}
+
+async function refreshQuotes() {
+  if (refreshing) return;
+  if (!tickers.length) { toast('No tickers to refresh'); return; }
+  if (!getKey()) { openKeyModal(refreshQuotes); return; }
+  refreshing = true;
+  const btn = document.getElementById('refresh-btn');
+  btn.disabled = true;
+  let ok = 0, fail = 0;
+  try {
+    for (let i = 0; i < tickers.length; i++) {
+      const t = tickers[i];
+      toast('Refreshing ' + t.symbol + ' (' + (i+1) + '/' + tickers.length + ')…');
+      try {
+        const q = await fetchQuote(t.symbol, false);
+        if (q.price == null && q.mktCap == null && !q.metricOk) { fail++; continue; }
+        if (q.price != null) t.price = q.price;
+        if (q.mktCap != null) t.mktCap = q.mktCap;
+        if (q.metricOk) t.pe = q.pe;               // null → '—', consistent with negative-EPS names
+        if (q.epsYoy != null) t.epsYoy = q.epsYoy;
+        ok++;
+      } catch(err) {
+        if (err.message.includes('key') || err.message.includes('rate limit')) throw err;
+        fail++;
+      }
+      await new Promise(r => setTimeout(r, 250));   // stay well under 60 calls/min (2 calls per symbol)
+    }
+    try { localStorage.setItem(REFRESH_LS, String(Date.now())); } catch(e) {}
+    save();
+    renderSnapNote();
+    toast('Quotes updated: ' + ok + ' ok' + (fail ? ', ' + fail + ' failed' : ''));
+  } catch(err) {
+    save();
+    renderSnapNote();
+    toast('Refresh stopped: ' + err.message);
+  }
+  btn.disabled = false;
+  refreshing = false;
+}
+
+function renderSnapNote() {
+  let ts = null;
+  try { ts = +localStorage.getItem(REFRESH_LS) || null; } catch(e) {}
+  document.getElementById('snap-note').innerHTML = ts
+    ? 'Quotes updated <b>' + new Date(ts).toLocaleString() + '</b>'
+    : 'Market snapshot <b>2026-06-26</b>';
+}
+
 // ===== Toast =====
 let toastTimer;
 function toast(msg) {
@@ -896,6 +1036,7 @@ if (location.protocol.startsWith('http')) document.getElementById('share-btn').s
 renderMethodology();
 renderBuckets();
 renderResearch();
+renderSnapNote();
 load();
 </script>
 </body>
