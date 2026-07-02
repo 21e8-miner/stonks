@@ -366,7 +366,7 @@ tbody tr:last-child td { border-bottom:none; }
     </div>
     <div class="modal-body">
       <div class="form-grid">
-        <div class="form-group"><label>Symbol</label><div class="sym-row"><input id="m-symbol" placeholder="AAPL"><button class="btn autofill-btn" onclick="autofillSymbol()" title="Autofill price, mkt cap, P/E, EPS growth from live quotes">⚡</button></div></div>
+        <div class="form-group"><label>Symbol</label><div class="sym-row"><input id="m-symbol" placeholder="AAPL" autocomplete="off" onchange="autofillOnChange()" onkeydown="if(event.key==='Enter'){event.preventDefault();autofillOnChange();}"><button class="btn autofill-btn" onclick="autofillSymbol()" title="Auto-loads on entry — or click to reload price, mkt cap, P/E, EPS growth">⚡</button></div></div>
         <div class="form-group"><label>Company</label><input id="m-company" placeholder="Apple Inc"></div>
         <div class="form-group"><label>Theme</label>
           <select id="m-theme"><option>GPU</option><option>CPU</option><option>Chip Fab</option><option>Memory/Storage</option><option>Tech Behemoths</option><option>Semiconductors</option><option>EV</option><option>Tech Memes</option><option>Memes</option><option>Telehealth</option><option>Gambling</option><option>Other</option></select>
@@ -789,6 +789,7 @@ function openAdd() {
   editingId = null;
   document.getElementById('modal-title').textContent = 'Add Ticker';
   ['symbol','company','price','mktcap','pe','epsyoy','expr'].forEach(id => document.getElementById('m-'+id).value = '');
+  lastAutofilled = ''; autofilledCompany = '';
   document.getElementById('m-theme').selectedIndex = 0;
   ['eps','val','narr','hype','cat','liq'].forEach(id => { document.getElementById('m-'+id).value = 3; });
   updateSliders();
@@ -801,6 +802,7 @@ function openEdit(id) {
   editingId = id;
   document.getElementById('modal-title').textContent = 'Edit ' + t.symbol;
   document.getElementById('m-symbol').value = t.symbol;
+  lastAutofilled = t.symbol.toUpperCase(); autofilledCompany = t.company;
   document.getElementById('m-company').value = t.company;
   document.getElementById('m-theme').value = THEME_COLORS[t.theme] ? t.theme : 'Other';
   document.getElementById('m-price').value = t.price;
@@ -938,6 +940,9 @@ const KEY_LS = 'stonks-finnhub-key';
 const REFRESH_LS = 'stonks-last-refresh';
 let pendingKeyAction = null;
 let refreshing = false;
+let lastAutofilled = '';   // symbol last auto-loaded in the modal (dedup guard)
+let autofillToken = 0;     // guards against out-of-order responses
+let autofilledCompany = ''; // company name we last auto-filled (so it follows the symbol, but a user-typed name is kept)
 
 function getKey() { try { return localStorage.getItem(KEY_LS) || DEFAULT_FINNHUB_KEY; } catch(e) { return DEFAULT_FINNHUB_KEY; } }
 function openKeyModal(action) {
@@ -985,22 +990,45 @@ async function fetchQuote(sym, withProfile) {
   };
 }
 
-async function autofillSymbol() {
-  const sym = document.getElementById('m-symbol').value.trim().toUpperCase();
-  if (!sym) { toast('Enter a symbol first'); return; }
-  if (!getKey()) { openKeyModal(autofillSymbol); return; }
+// Shared quote autofill for the modal. `silent` suppresses the empty-field nag
+// (used by the auto-on-entry path). A request token guards against a slower earlier
+// fetch landing after a newer symbol was entered.
+async function doAutofill(sym, silent) {
+  sym = (sym || '').trim().toUpperCase();
+  if (!sym) { if (!silent) toast('Enter a symbol first'); return; }
+  if (!getKey()) { openKeyModal(() => doAutofill(sym, silent)); return; }
+  lastAutofilled = sym;
+  const token = ++autofillToken;
+  const btn = document.querySelector('.autofill-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
   toast('Fetching ' + sym + '…');
   try {
     const q = await fetchQuote(sym, true);
-    if (q.price == null && q.mktCap == null && !q.metricOk) { toast('No data for ' + sym + ' — check the symbol'); return; }
+    if (token !== autofillToken) return;   // a newer symbol superseded this fetch
+    if (q.price == null && q.mktCap == null && !q.metricOk) { toast('No data for ' + sym + ' — check the symbol'); lastAutofilled = ''; return; }
     if (q.price != null) document.getElementById('m-price').value = q.price;
     if (q.mktCap != null) document.getElementById('m-mktcap').value = q.mktCap;
     if (q.metricOk) document.getElementById('m-pe').value = q.pe != null ? q.pe.toFixed(2) : '';
     if (q.epsYoy != null) document.getElementById('m-epsyoy').value = q.epsYoy;
-    if (q.name && !document.getElementById('m-company').value.trim()) document.getElementById('m-company').value = q.name;
+    const companyEl = document.getElementById('m-company');
+    if (q.name && (!companyEl.value.trim() || companyEl.value.trim() === autofilledCompany)) { companyEl.value = q.name; autofilledCompany = q.name; }
     const missing = [['price',q.price],['mkt cap',q.mktCap],['P/E',q.pe],['EPS YoY',q.epsYoy]].filter(x => x[1] == null).map(x => x[0]);
     toast(sym + ' filled' + (missing.length ? ' — no ' + missing.join(', ') : ''));
-  } catch(err) { toast('Autofill failed: ' + err.message); }
+  } catch(err) {
+    if (token === autofillToken) { toast('Autofill failed: ' + err.message); lastAutofilled = ''; }
+  } finally {
+    if (token === autofillToken && btn) { btn.disabled = false; btn.textContent = '⚡'; }
+  }
+}
+
+// ⚡ button: always (re)fetch, even if unchanged.
+function autofillSymbol() { lastAutofilled = ''; doAutofill(document.getElementById('m-symbol').value, false); }
+
+// Auto-load when a new symbol is entered (blur / Enter), skipping duplicates.
+function autofillOnChange() {
+  const sym = document.getElementById('m-symbol').value.trim().toUpperCase();
+  if (!sym || sym === lastAutofilled) return;
+  doAutofill(sym, true);
 }
 
 async function refreshQuotes() {
