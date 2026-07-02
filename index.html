@@ -80,6 +80,15 @@ body { font-family:var(--sans); background:var(--bg); color:var(--text); min-hei
 .chip { padding:6px 11px; border-radius:2px; border:1px solid var(--border2); background:var(--card); color:var(--text2); font-family:var(--sans); font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.6px; cursor:pointer; }
 .chip:hover { color:var(--accent); border-color:var(--text2); }
 .chip.on { background:var(--accent); border-color:var(--accent); color:#FFF6EC; }
+.seg { display:inline-flex; border:1px solid var(--border2); border-radius:2px; overflow:hidden; }
+.seg-btn { padding:8px 13px; background:var(--card); border:none; border-right:1px solid var(--border2); color:var(--text2); font-family:var(--sans); font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.6px; cursor:pointer; }
+.seg-btn:last-child { border-right:none; }
+.seg-btn:hover { color:var(--accent); }
+.seg-btn.on { background:var(--accent); color:#FFF6EC; }
+.sector-row td { background:var(--bg2); padding:9px 10px; border-top:2px solid var(--border2); }
+.sector-name { font-family:var(--serif); font-size:15px; color:var(--text); border-left:3px solid var(--accent); padding-left:9px; }
+.sector-meta { color:var(--text3); font-size:10px; text-transform:uppercase; letter-spacing:0.6px; margin-left:10px; }
+.sector-empty td { color:var(--text3); font-family:var(--prose); font-style:italic; padding:9px 12px; }
 
 /* ===== Table ===== */
 .table-wrap { overflow-x:auto; border-top:2px solid var(--text); border-bottom:2px solid var(--text); }
@@ -278,6 +287,10 @@ tbody tr:last-child td { border-bottom:none; }
     <div class="toolbar">
       <button class="btn btn-primary" onclick="openAdd()">+ Add Ticker</button>
       <button class="btn" id="refresh-btn" onclick="refreshQuotes()" title="Update price, market cap, P/E and EPS growth for every ticker">↻ Refresh Quotes</button>
+      <div class="seg" role="group" aria-label="Group view">
+        <button class="seg-btn" id="seg-sector" onclick="setView('sector')">By sector</button>
+        <button class="seg-btn" id="seg-rank" onclick="setView('rank')">By rank</button>
+      </div>
       <input class="search" id="search" placeholder="Search symbol, company, theme…" oninput="render()">
       <div class="chips" id="action-chips"></div>
     </div>
@@ -382,7 +395,7 @@ tbody tr:last-child td { border-bottom:none; }
         <div class="form-group"><label>Symbol</label><div class="sym-row"><input id="m-symbol" placeholder="AAPL" autocomplete="off" onchange="autofillOnChange()" onkeydown="if(event.key==='Enter'){event.preventDefault();autofillOnChange();}"><button class="btn autofill-btn" onclick="autofillSymbol()" title="Auto-loads on entry — or click to reload price, mkt cap, P/E, EPS growth">⚡</button></div></div>
         <div class="form-group"><label>Company</label><input id="m-company" placeholder="Apple Inc"></div>
         <div class="form-group"><label>Theme</label>
-          <select id="m-theme"><option>GPU</option><option>CPU</option><option>Chip Fab</option><option>Memory/Storage</option><option>Tech Behemoths</option><option>Semiconductors</option><option>EV</option><option>Tech Memes</option><option>Memes</option><option>Telehealth</option><option>Gambling</option><option>Other</option></select>
+          <select id="m-theme"><option>GPU</option><option>CPU</option><option>Chip Fab</option><option>Memory/Storage</option><option>Tech Behemoths</option><option>Semiconductors</option><option>EV</option><option>Tech Memes</option><option>Memes</option><option>Telehealth</option><option>Gambling</option><option>Collectibles</option><option>Other</option></select>
         </div>
         <div class="form-group"><label>Price ($)</label><input type="number" id="m-price" placeholder="150.00" step="0.01"></div>
       </div>
@@ -469,7 +482,7 @@ const THEME_COLORS = {
   'GPU': '#0F5499', 'CPU': '#3D5A80', 'Chip Fab': '#0D7680',
   'Memory/Storage': '#8B1E3F', 'Tech Behemoths': '#4B3F72',
   'Semiconductors': '#1B6B5A', 'EV': '#3B6E47', 'Tech Memes': '#A63A50',
-  'Memes': '#9C5A2E', 'Telehealth': '#2C6E8F', 'Gambling': '#6B4A7A', 'Other': '#6B635C'
+  'Memes': '#9C5A2E', 'Telehealth': '#2C6E8F', 'Gambling': '#6B4A7A', 'Collectibles': '#8A6D3B', 'Other': '#6B635C'
 };
 
 const DEFAULT_TICKERS = [
@@ -683,6 +696,28 @@ const COLS = [
 ];
 const ACTION_FILTERS = ['All','Build/Trade','Defined-risk only','Watch / wait','Avoid / fade'];
 
+// The group's 12 sectors, in their sheet's order. Collectibles is their earmarked empty bucket.
+const SECTORS = [
+  {name:'Tech behemoths', key:'Tech Behemoths'},
+  {name:'Semiconductors', key:'Semiconductors'},
+  {name:'Chip fab', key:'Chip Fab'},
+  {name:'Memory / storage', key:'Memory/Storage'},
+  {name:'CPUs', key:'CPU'},
+  {name:'GPUs', key:'GPU'},
+  {name:'EVs', key:'EV'},
+  {name:'Tech memes', key:'Tech Memes'},
+  {name:'Memes', key:'Memes'},
+  {name:'Telehealth / peptides', key:'Telehealth'},
+  {name:'Gambling', key:'Gambling'},
+  {name:'Collectibles / trading cards', key:'Collectibles'},
+];
+let viewMode = (() => { try { return localStorage.getItem('stonks-view') || 'sector'; } catch(e) { return 'sector'; } })();
+function setView(mode) {
+  viewMode = mode;
+  try { localStorage.setItem('stonks-view', mode); } catch(e) {}
+  render();
+}
+
 function render() {
   const searchEl = document.getElementById('search');
   const search = (searchEl.value || '').toLowerCase();
@@ -695,15 +730,57 @@ function render() {
     return av === bv ? 0 : (av > bv ? sortDir : -sortDir);
   });
 
+  const sortableHead = viewMode === 'rank';
   document.getElementById('thead').innerHTML = COLS.map(c =>
     c.key === '_menu'
       ? '<th></th>'
-      : `<th class="sortable" onclick="setSort('${c.key}')">${c.label}${c.key===sortKey?'<span class="sort">'+(sortDir===-1?'▼':'▲')+'</span>':''}</th>`
+      : sortableHead
+        ? `<th class="sortable" onclick="setSort('${c.key}')">${c.label}${c.key===sortKey?'<span class="sort">'+(sortDir===-1?'▼':'▲')+'</span>':''}</th>`
+        : `<th>${c.label}</th>`
   ).join('');
 
-  document.getElementById('tbody').innerHTML = data.map(t => {
-    const tc = THEME_COLORS[t.theme] || THEME_COLORS['Other'];
-    return `
+  const empty = '<tr><td colspan="17" style="text-align:center;color:var(--text3);padding:24px">No tickers match.</td></tr>';
+  let bodyHTML;
+  if (viewMode === 'sector') {
+    const unfiltered = !search && actionFilter === 'All';
+    const placed = new Set();
+    bodyHTML = '';
+    SECTORS.forEach(sec => {
+      const rows = data.filter(t => t.theme === sec.key).sort((a,b) => b.composite - a.composite);
+      rows.forEach(t => placed.add(t.id));
+      if (!rows.length && !(sec.key === 'Collectibles' && unfiltered)) return;
+      bodyHTML += sectorHeader(sec, rows)
+        + (rows.length ? rows.map(tickerRow).join('')
+                       : '<tr class="sector-empty"><td colspan="17">Planned bucket — no picks yet.</td></tr>');
+    });
+    const others = data.filter(t => !placed.has(t.id)).sort((a,b) => b.composite - a.composite);
+    if (others.length) bodyHTML += sectorHeader({name:'Other', key:'Other'}, others) + others.map(tickerRow).join('');
+    bodyHTML = bodyHTML || empty;
+  } else {
+    bodyHTML = data.map(tickerRow).join('') || empty;
+  }
+  document.getElementById('tbody').innerHTML = bodyHTML;
+  document.getElementById('seg-sector').classList.toggle('on', viewMode === 'sector');
+  document.getElementById('seg-rank').classList.toggle('on', viewMode === 'rank');
+
+  document.getElementById('action-chips').innerHTML = ACTION_FILTERS.map(a => {
+    const n = a === 'All' ? tickers.length : tickers.filter(t => t.action === a).length;
+    return `<button class="chip ${actionFilter===a?'on':''}" onclick="setActionFilter('${a}')">${a} · ${n}</button>`;
+  }).join('');
+
+  document.getElementById('st-count').textContent = tickers.length;
+  document.getElementById('st-avg').textContent = tickers.length ? Math.round(tickers.reduce((s,t)=>s+t.composite,0)/tickers.length) : '–';
+  document.getElementById('st-build').textContent = tickers.filter(t=>t.action==='Build/Trade').length;
+  document.getElementById('st-defined').textContent = tickers.filter(t=>t.action==='Defined-risk only').length;
+  document.getElementById('st-avoid').textContent = tickers.filter(t=>t.action==='Avoid / fade').length;
+
+  renderDist();
+  renderRisk();
+}
+
+function tickerRow(t) {
+  const tc = THEME_COLORS[t.theme] || THEME_COLORS['Other'];
+  return `
     <tr>
       <td class="rank ${t.rank<=3?'top':''}">${t.rank}</td>
       <td><span class="theme-pill" style="background:${tc}22;color:${tc}">${esc(t.theme)}</span></td>
@@ -729,21 +806,14 @@ function render() {
         </div>
       </td>
     </tr>`;
-  }).join('') || '<tr><td colspan="17" style="text-align:center;color:var(--text3);padding:24px">No tickers match.</td></tr>';
+}
 
-  document.getElementById('action-chips').innerHTML = ACTION_FILTERS.map(a => {
-    const n = a === 'All' ? tickers.length : tickers.filter(t => t.action === a).length;
-    return `<button class="chip ${actionFilter===a?'on':''}" onclick="setActionFilter('${a}')">${a} · ${n}</button>`;
-  }).join('');
-
-  document.getElementById('st-count').textContent = tickers.length;
-  document.getElementById('st-avg').textContent = tickers.length ? Math.round(tickers.reduce((s,t)=>s+t.composite,0)/tickers.length) : '–';
-  document.getElementById('st-build').textContent = tickers.filter(t=>t.action==='Build/Trade').length;
-  document.getElementById('st-defined').textContent = tickers.filter(t=>t.action==='Defined-risk only').length;
-  document.getElementById('st-avoid').textContent = tickers.filter(t=>t.action==='Avoid / fade').length;
-
-  renderDist();
-  renderRisk();
+function sectorHeader(sec, rows) {
+  const tc = THEME_COLORS[sec.key] || THEME_COLORS['Other'];
+  const meta = rows.length
+    ? `${rows.length} ${rows.length===1?'name':'names'} · avg ${Math.round(rows.reduce((s,t)=>s+t.composite,0)/rows.length)}`
+    : 'planned';
+  return `<tr class="sector-row"><td colspan="17"><span class="sector-name" style="border-left-color:${tc}">${esc(sec.name)}</span><span class="sector-meta">${meta}</span></td></tr>`;
 }
 
 function setSort(key) {
